@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, makeCacheableSignalKeyStore, delay } = require("@whiskeysockets/baileys");
+const { default: makeWASocket, useMultiFileAuthState, makeCacheableSignalKeyStore, delay, DisconnectReason } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const readline = require("readline");
 
@@ -18,11 +18,6 @@ function askNumber() {
 async function start() {
     const number = await askNumber();
 
-    if (!number || number.length < 10) {
-        console.log("❌ Invalid number");
-        process.exit(0);
-    }
-
     const { state, saveCreds } = await useMultiFileAuthState("./session");
 
     const sock = makeWASocket({
@@ -32,33 +27,30 @@ async function start() {
         },
         printQRInTerminal: false,
         logger: pino({ level: "silent" }),
-        browser: ["Ubuntu", "Chrome", "20.0"]
+        browser: ["Ubuntu", "Chrome", "20.0"],
+        keepAliveIntervalMs: 10000 // 🔥 keep alive
     });
 
     sock.ev.on("creds.update", saveCreds);
 
-    let pairingDone = false;
+    let codeSent = false;
 
     sock.ev.on("connection.update", async (update) => {
-        const { connection, receivedPendingNotifications } = update;
+        const { connection, lastDisconnect } = update;
 
-        // 🔥 IMPORTANT FIX
-        if (!pairingDone && connection === "connecting") {
+        if (connection === "connecting" && !codeSent) {
+            codeSent = true;
+
             try {
-                pairingDone = true;
-
-                await delay(1000); // ⚠️ required small wait
+                await delay(1000);
 
                 const code = await sock.requestPairingCode(number);
 
-                console.log("\n🔑 Pairing Code:\n");
-                console.log(code);
-                console.log("\n👉 WhatsApp → Linked Devices → Link with phone number\n");
+                console.log("\n🔑 Pairing Code:\n", code);
+                console.log("\n👉 Enter quickly in WhatsApp!\n");
 
             } catch (err) {
-                console.log("❌ Pairing Failed");
-                console.log(err);
-                process.exit(0);
+                console.log("❌ Pairing error:", err);
             }
         }
 
@@ -67,7 +59,15 @@ async function start() {
         }
 
         if (connection === "close") {
-            console.log("❌ Connection Closed");
+            const reason = lastDisconnect?.error?.output?.statusCode;
+
+            console.log("❌ Connection closed, reason:", reason);
+
+            // 🔥 AUTO RECONNECT
+            if (reason !== DisconnectReason.loggedOut) {
+                console.log("🔄 Reconnecting...");
+                start();
+            }
         }
     });
 }
