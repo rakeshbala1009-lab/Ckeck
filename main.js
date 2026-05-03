@@ -1,15 +1,12 @@
-const { default: makeWASocket, useMultiFileAuthState, makeCacheableSignalKeyStore } = require("@whiskeysockets/baileys");
+const { default: makeWASocket, useMultiFileAuthState, makeCacheableSignalKeyStore, delay } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const readline = require("readline");
-const fs = require("fs");
 
-// input system
 const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
 });
 
-// ask number
 function askNumber() {
     return new Promise((resolve) => {
         rl.question("📱 Enter WhatsApp Number (e.g. 8801XXXXXXXXX): ", (num) => {
@@ -26,9 +23,7 @@ async function start() {
         process.exit(0);
     }
 
-    const sessionPath = "./session";
-
-    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+    const { state, saveCreds } = await useMultiFileAuthState("./session");
 
     const sock = makeWASocket({
         auth: {
@@ -42,31 +37,37 @@ async function start() {
 
     sock.ev.on("creds.update", saveCreds);
 
-    let codeGenerated = false;
+    let pairingDone = false;
 
     sock.ev.on("connection.update", async (update) => {
-        const { connection } = update;
+        const { connection, receivedPendingNotifications } = update;
 
-        if (connection === "connecting" && !codeGenerated) {
-            codeGenerated = true;
+        // 🔥 IMPORTANT FIX
+        if (!pairingDone && connection === "connecting") {
             try {
+                pairingDone = true;
+
+                await delay(1000); // ⚠️ required small wait
+
                 const code = await sock.requestPairingCode(number);
+
                 console.log("\n🔑 Pairing Code:\n");
                 console.log(code);
                 console.log("\n👉 WhatsApp → Linked Devices → Link with phone number\n");
+
             } catch (err) {
-                console.log("❌ Failed to generate code");
+                console.log("❌ Pairing Failed");
                 console.log(err);
                 process.exit(0);
             }
         }
 
         if (connection === "open") {
-            console.log("✅ WhatsApp Connected Successfully!");
+            console.log("✅ Connected Successfully!");
         }
 
         if (connection === "close") {
-            console.log("❌ Connection closed");
+            console.log("❌ Connection Closed");
         }
     });
 }
