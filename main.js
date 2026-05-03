@@ -1,88 +1,94 @@
 const TelegramBot = require('node-telegram-bot-api');
-const { default: Venocyber_Tech, useMultiFileAuthState, delay, makeCacheableSignalKeyStore } = require("maher-zubair-baileys");
-const fs = require('fs');
+const { default: makeWASocket, useMultiFileAuthState, delay, makeCacheableSignalKeyStore } = require("@whiskeysockets/baileys");
+const fs = require("fs");
 const pino = require("pino");
 
-// 🔴 PUT YOUR BOT TOKEN HERE
+// 🔴 Telegram Bot Token এখানে বসাও
 const bot = new TelegramBot("8734346705:AAEk2u_PUM5Wr9cMdpcF69Punh0LmOj3iTI", { polling: true });
 
-// random id generator
+// 🔐 তোমার Telegram ID (only you can use)
+const ALLOWED_USERS = [6058266328];
+
+// random session id
 function makeid(length = 6) {
-    let result = '';
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let result = "";
     for (let i = 0; i < length; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
+        result += chars[Math.floor(Math.random() * chars.length)];
     }
     return result;
 }
 
+// delete session folder
 function removeFile(path) {
     if (fs.existsSync(path)) {
         fs.rmSync(path, { recursive: true, force: true });
     }
 }
 
-// start command
+// /start command
 bot.onText(/\/start/, (msg) => {
-    bot.sendMessage(msg.chat.id, "Send your number like:\n\n`/pair 8801XXXXXXXXX`", {
-        parse_mode: "Markdown"
-    });
+    if (!ALLOWED_USERS.includes(msg.from.id)) {
+        return bot.sendMessage(msg.chat.id, "⛔ Access Denied");
+    }
+
+    bot.sendMessage(msg.chat.id, "✅ Bot Ready\n\nUse:\n/pair 8801XXXXXXXXX");
 });
 
-// pair command
+// /pair command
 bot.onText(/\/pair (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
-    let num = match[1];
 
-    if (!num) {
-        return bot.sendMessage(chatId, "❌ Please provide a number.");
+    if (!ALLOWED_USERS.includes(msg.from.id)) {
+        return bot.sendMessage(chatId, "⛔ Unauthorized");
     }
 
-    num = num.replace(/[^0-9]/g, '');
+    let number = match[1].replace(/[^0-9]/g, '');
 
-    if (num.length < 10) {
-        return bot.sendMessage(chatId, "❌ Invalid number format.");
+    if (!number || number.length < 10) {
+        return bot.sendMessage(chatId, "❌ Invalid number\nExample: /pair 8801XXXXXXXXX");
     }
 
-    const id = makeid();
-    const sessionPath = './temp/' + id;
+    const sessionId = makeid();
+    const sessionPath = "./sessions/" + sessionId;
 
     try {
+        await bot.sendMessage(chatId, "⏳ Generating pairing code...");
+
         const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
 
-        const sock = Venocyber_Tech({
+        const sock = makeWASocket({
             auth: {
                 creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }))
+                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" }))
             },
             printQRInTerminal: false,
-            logger: pino({ level: "fatal" }),
-            browser: ["Chrome (Linux)", "", ""]
+            logger: pino({ level: "silent" }),
+            browser: ["Ubuntu", "Chrome", "20.0"]
         });
 
+        // generate pairing code
         if (!sock.authState.creds.registered) {
             await delay(1500);
+            const code = await sock.requestPairingCode(number);
 
-            const code = await sock.requestPairingCode(num);
-            await bot.sendMessage(chatId, `🔑 Pairing Code:\n\n${code}`);
+            await bot.sendMessage(chatId, `🔑 Pair Code:\n\n${code}\n\n👉 WhatsApp → Linked Devices → Link with phone number`);
         }
 
-        sock.ev.on('creds.update', saveCreds);
+        // save session
+        sock.ev.on("creds.update", saveCreds);
 
+        // connection status
         sock.ev.on("connection.update", async (update) => {
             const { connection } = update;
 
             if (connection === "open") {
-                await delay(4000);
+                await bot.sendMessage(chatId, "✅ WhatsApp Connected Successfully!");
 
-                let data = fs.readFileSync(`${sessionPath}/creds.json`);
-                let b64 = Buffer.from(data).toString('base64');
-
-                await bot.sendMessage(chatId, "✅ Connected!\n\nHere is your session:");
-                await bot.sendMessage(chatId, b64);
-
-                removeFile(sessionPath);
-                await sock.ws.close();
+                setTimeout(() => {
+                    sock.ws.close();
+                    removeFile(sessionPath);
+                }, 5000);
             }
 
             if (connection === "close") {
@@ -93,6 +99,6 @@ bot.onText(/\/pair (.+)/, async (msg, match) => {
     } catch (err) {
         console.log(err);
         removeFile(sessionPath);
-        bot.sendMessage(chatId, "❌ Error generating pairing code.");
+        bot.sendMessage(chatId, "❌ Failed to generate pairing code");
     }
 });
